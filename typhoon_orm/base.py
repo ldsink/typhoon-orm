@@ -17,7 +17,6 @@ class TObject(object):
     def __init__(self, _id=None):
         self._id = _id
         self._data = dict()
-        self._old_data = dict()
         self._need_load = True
         if not self.__table_name:
             raise Exception('No table name defined for {}!'.format(self.__class__.__name__))
@@ -43,7 +42,6 @@ class TObject(object):
         if not self._id:
             self._id = self._data.get('id', None)
         self._data.clear()
-        self._old_data.clear()
         self._need_load = True
 
     @gen.coroutine
@@ -51,9 +49,9 @@ class TObject(object):
         self.reset(_id)
 
         pool = self.get_pool()
-        query = "SELECT * FROM %(table_name)s WHEN id = %(id)s LIMIT = 1"
+        query = "SELECT * FROM %(__table_name)s WHEN id = %(id)s LIMIT = 1"
         params = {
-            'table_name': self.__table_name,
+            '__table_name': self.__table_name,
             'id': self._id,
         }
         cursor = yield pool.execute(query, params)
@@ -70,8 +68,8 @@ class TObject(object):
             raise Exception('In function loads, input param should be a list.')
 
         pool = self.get_pool()
-        query = "SELECT * FROM %(table_name)s WHEN id IN ({sub_query})"
-        params = {'table_name': self.__table_name}
+        query = "SELECT id FROM %(__table_name)s WHEN id IN ({sub_query})"
+        params = {'__table_name': self.__table_name}
         sub_query = []
         for pos, _id in enumerate(_ids):
             param = "id_{pos}".format(pos=pos)
@@ -82,55 +80,79 @@ class TObject(object):
         data = cursor.fetchall()
         ret = []
         for row in data:
-            d = {}
-            for k, v in self.__table_columns.items():
-                d[k] = row.get(v)
+            d = self.__class__(row)
             ret.append(d)
         raise gen.Return(ret)
 
     @gen.coroutine
     def insert(self):
-        # todo
-        pass
+        query = "INSERT INTO %(__table_name)s SET "
+        attrs = []
+        params = {
+            '__table_name': self.__table_name,
+        }
+        for item, value in self.__table_columns.items():
+            if item in self._data:
+                item_value_str = item + 'value'
+                attrs.append("{item} = %({value})s".format(item=item, value=item_value_str))
+                params[item_value_str] = self._data[item]
+        if not len(attrs):
+            raise gen.Return(False)
+        query += ','.join(attrs)
+        cursor = yield self.get_pool().execute(query, params)
+        raise gen.Return(cursor.fetchone())
 
     @gen.coroutine
     def delete(self, _id=None):
-        pool = self.get_pool()
-        query = "DELETE FROM %(table_name)s WHERE id = %(id)s LIMIT 1"
+        query = "DELETE FROM %(__table_name)s WHERE id = %(id)s LIMIT 1"
         params = {
-            'table_name': self.table_name,
+            '__table_name': self.__table_name,
             'id': _id if _id else self._id,
         }
-        cursor = yield pool.execute(query, params)
+        cursor = yield self.get_pool().execute(query, params)
         raise gen.Return(cursor.fetchone())
 
     @gen.coroutine
     def update(self):
-        # todo
-        pass
+        old_data = self._data
+        self.load()
+        update_attrs = []
+        for item, value in self.__table_columns.items():
+            if old_data[item] != self._data[item]:
+                update_attrs.append((item, old_data[item]))
+        if not len(update_attrs):
+            raise gen.Return(False)
+
+        query = "UPDATE %(__table_name)s SET {update_attrs} WHERE id = %(id)s LIMIT 1"
+        params = {
+            '__table_name': self.__table_name,
+            'id': self._id,
+        }
+        attrs = []
+        for item, value in update_attrs:
+            item_value_str = item + 'value'
+            attrs.append("{item} = %({value})s".format(item=item, value=item_value_str))
+            params[item_value_str] = self._data[item]
+        query = query.format(update_attrs=','.join(attrs))
+        cursor = yield self.get_pool().execute(query, params)
+        raise gen.Return(cursor.fetchone())
 
     def __getitem__(self, item):
-        if self._need_load:
-            raise Exception('{object} need load data before get value.'.format(object=self.__class__.__name__))
         if item not in self.__table_columns.keys():
             raise Exception('{object} don\'t have {} field'.format(object=self.__class__.__name__))
-        pass
+        if item not in self._data and self._need_load:
+            raise Exception('{object} need load data before get value.'.format(object=self.__class__.__name__))
+        return self._data[item]
 
-    def __setitem__(self, key, value):
-        pass
-
-        # def get_query(self, option: dict):
-        #     where_option = ['1 = 1']
-        #     for k, v in option.items():
-        #         v = converters.escape_item(v, self.DB_CHARSET)
-        #         if k in self.table_columns:
-        #             where_option.append('{k} = {v}'.format_map(locals()))
-        #     return ' AND '.join(where_option)
+    def __setitem__(self, item, value):
+        if item not in self.__table_columns.keys():
+            raise Exception('{object} don\'t have {} field'.format(object=self.__class__.__name__))
+        self._data[item] = value
 
 
 # below for test
 class Model(TObject):
-    table_name = 'haha'
+    __table_name = 'haha'
 
 
 a = tornado_mysql.connect()
