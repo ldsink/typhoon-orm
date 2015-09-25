@@ -1,5 +1,3 @@
-import copy
-
 from tornado import gen
 from tornado_mysql import pools
 
@@ -43,7 +41,7 @@ class TObject(object):
     def load(self):
         """
         Load data from database.
-        :return:
+        :return: True if load data success, False otherwise.
         """
         columns_name = []
         columns_db_name = []
@@ -85,7 +83,6 @@ class TObject(object):
     def delete(self):
         """
         Delete from database.
-        :return:
         """
         query = "DELETE FROM {} WHERE id = %(id)s LIMIT 1".format(self._table_name)
         params = {'id': self.id}
