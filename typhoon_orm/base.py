@@ -103,14 +103,12 @@ class TObject(object):
         """
         Update value.
         """
-        cur_data = copy.copy(self.__dict__)
-        yield self.load()
         params = {'id': self.id}
         update_columns = []
         for item, column_name in self._table_columns.items():
-            if item in cur_data and cur_data[item] != self.__getattribute__(item):
+            if item in self.__dict__:
                 update_columns.append("{} = %({})s".format(column_name, item))
-                params[item] = cur_data[item]
+                params[item] = self.__dict__[item]
         if not len(update_columns):
             raise gen.Return(False)
         query = "UPDATE {} SET {} WHERE id = %(id)s LIMIT 1".format(self._table_name, ", ".join(update_columns))
