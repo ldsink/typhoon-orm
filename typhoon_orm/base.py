@@ -1,168 +1,118 @@
-from tornado import ioloop, gen
+import copy
+
+from tornado import gen
 from tornado_mysql import pools
-import tornado_mysql
 
 from typhoon_orm.database import TDatabase
 
 
 class TObject(object):
-    __table_name = None
-    __table_columns = {
-        'id': 'id',
-    }
+    # *** Configuration Begin ***
 
-    __db_config = None
-    __db_pool = None
+    _table_name = None
+    _table_columns = {
+        'id': 'id',  # id must mapping to database id.
+    }
+    _db_config = None
+
+    # *** Configuration End ***
+
+    _db_pool = None
 
     def __init__(self, _id=None):
-        self._id = _id
-        self._data = dict()
-        self._need_load = True
-        if not self.__table_name:
+        self.id = _id
+        if not self._table_name:
             raise Exception('No table name defined for {}!'.format(self.__class__.__name__))
 
     def get_pool(self):
-        if not self.__db_pool:
-            if not issubclass(self.__db_config, TDatabase):
+        if not self._db_pool:
+            if not isinstance(self._db_config, TDatabase):
                 raise Exception('No database configurations for {}!'.format(self.__class__.__name__))
             config = dict(
-                host=self.__db_config.db_host,
-                port=self.__db_config.db_port,
-                user=self.__db_config.db_username,
-                passwd=self.__db_config.db_password,
-                db=self.__db_config.db_database,
-                charset=self.__db_config.db_charset,
-                autocommit=self.__db_config.db_autocommit)
-            self.__db_pool = pools.Pool(config, max_idle_connections=1, max_recycle_sec=600)
-        return self.__db_pool
-
-    def reset(self, _id=None):
-        if _id is not None:
-            self._id = _id
-        if not self._id:
-            self._id = self._data.get('id', None)
-        self._data.clear()
-        self._need_load = True
+                host=self._db_config.db_host,
+                port=self._db_config.db_port,
+                user=self._db_config.db_username,
+                passwd=self._db_config.db_password,
+                db=self._db_config.db_database,
+                charset=self._db_config.db_charset,
+                autocommit=self._db_config.db_autocommit)
+            self._db_pool = pools.Pool(config, max_idle_connections=1, max_recycle_sec=600, max_open_connections=100)
+        return self._db_pool
 
     @gen.coroutine
-    def load(self, _id=None):
-        self.reset(_id)
-
-        pool = self.get_pool()
-        query = "SELECT * FROM %(__table_name)s WHEN id = %(id)s LIMIT = 1"
-        params = {
-            '__table_name': self.__table_name,
-            'id': self._id,
-        }
-        cursor = yield pool.execute(query, params)
+    def load(self):
+        """
+        Load data from database.
+        :return:
+        """
+        columns_name = []
+        columns_db_name = []
+        for name, db_name in self._table_columns.items():
+            if name == 'id':
+                continue
+            columns_name.append(name)
+            columns_db_name.append(db_name)
+        query = "SELECT {} FROM {} WHERE id = %(id)s LIMIT 1".format(', '.join(columns_db_name), self._table_name)
+        params = {'id': self.id}
+        cursor = yield self.get_pool().execute(query, params)
         data = cursor.fetchone()
         if data:
-            for k, v in self.__table_columns.items():
-                self._data[k] = data.get(v)
-            self._need_load = False
-        raise gen.Return(self._data)
-
-    @gen.coroutine
-    def loads(self, _ids=None):
-        if not isinstance(_ids, list):
-            raise Exception('In function loads, input param should be a list.')
-
-        pool = self.get_pool()
-        query = "SELECT id FROM %(__table_name)s WHEN id IN ({sub_query})"
-        params = {'__table_name': self.__table_name}
-        sub_query = []
-        for pos, _id in enumerate(_ids):
-            param = "id_{pos}".format(pos=pos)
-            sub_query.append("%({param})s".format(param=param))
-            params[param] = _id
-        query.format(sub_query=",".join(sub_query))
-        cursor = yield pool.execute(query, params)
-        data = cursor.fetchall()
-        ret = []
-        for row in data:
-            d = self.__class__(row)
-            ret.append(d)
-        raise gen.Return(ret)
+            for i in range(len(columns_name)):
+                self.__setattr__(columns_name[i], data[i])
+            raise gen.Return(True)
+        raise gen.Return(False)
 
     @gen.coroutine
     def insert(self):
-        query = "INSERT INTO %(__table_name)s SET "
+        """
+        Insert an object to database.
+        :return: last row id
+        """
+        query = "INSERT INTO {} SET ".format(self._table_name)
         attrs = []
-        params = {
-            '__table_name': self.__table_name,
-        }
-        for item, value in self.__table_columns.items():
-            if item in self._data:
-                item_value_str = item + 'value'
-                attrs.append("{item} = %({value})s".format(item=item, value=item_value_str))
-                params[item_value_str] = self._data[item]
+        params = {}
+        for item, item_mapping_name in self._table_columns.items():
+            if hasattr(self, item) and self.__getattribute__(item) is not None:
+                attrs.append("{} = %({})s".format(item_mapping_name, item_mapping_name))
+                params[item_mapping_name] = self.__getattribute__(item)
         if not len(attrs):
-            raise gen.Return(False)
-        query += ','.join(attrs)
+            raise gen.Return(None)
+        query += ', '.join(attrs)
         cursor = yield self.get_pool().execute(query, params)
-        raise gen.Return(cursor.fetchone())
+        raise gen.Return(cursor.lastrowid)
 
     @gen.coroutine
-    def delete(self, _id=None):
-        query = "DELETE FROM %(__table_name)s WHERE id = %(id)s LIMIT 1"
-        params = {
-            '__table_name': self.__table_name,
-            'id': _id if _id else self._id,
-        }
-        cursor = yield self.get_pool().execute(query, params)
-        raise gen.Return(cursor.fetchone())
+    def delete(self):
+        """
+        Delete from database.
+        :return:
+        """
+        query = "DELETE FROM {} WHERE id = %(id)s LIMIT 1".format(self._table_name)
+        params = {'id': self.id}
+        yield self.get_pool().execute(query, params)
+
+    @gen.coroutine
+    def save(self):
+        """
+        Update value.
+        """
+        yield self.update()
 
     @gen.coroutine
     def update(self):
-        old_data = self._data
-        self.load()
-        update_attrs = []
-        for item, value in self.__table_columns.items():
-            if old_data[item] != self._data[item]:
-                update_attrs.append((item, old_data[item]))
-        if not len(update_attrs):
+        """
+        Update value.
+        """
+        cur_data = copy.copy(self.__dict__)
+        yield self.load()
+        params = {'id': self.id}
+        update_columns = []
+        for item, column_name in self._table_columns.items():
+            if item in cur_data and cur_data[item] != self.__getattribute__(item):
+                update_columns.append("{} = %({})s".format(column_name, item))
+                params[item] = cur_data[item]
+        if not len(update_columns):
             raise gen.Return(False)
-
-        query = "UPDATE %(__table_name)s SET {update_attrs} WHERE id = %(id)s LIMIT 1"
-        params = {
-            '__table_name': self.__table_name,
-            'id': self._id,
-        }
-        attrs = []
-        for item, value in update_attrs:
-            item_value_str = item + 'value'
-            attrs.append("{item} = %({value})s".format(item=item, value=item_value_str))
-            params[item_value_str] = self._data[item]
-        query = query.format(update_attrs=','.join(attrs))
-        cursor = yield self.get_pool().execute(query, params)
-        raise gen.Return(cursor.fetchone())
-
-    def __getitem__(self, item):
-        if item not in self.__table_columns.keys():
-            raise Exception('{object} don\'t have {} field'.format(object=self.__class__.__name__))
-        if item not in self._data and self._need_load:
-            raise Exception('{object} need load data before get value.'.format(object=self.__class__.__name__))
-        return self._data[item]
-
-    def __setitem__(self, item, value):
-        if item not in self.__table_columns.keys():
-            raise Exception('{object} don\'t have {} field'.format(object=self.__class__.__name__))
-        self._data[item] = value
-
-
-# below for test
-class Model(TObject):
-    __table_name = 'haha'
-
-
-a = tornado_mysql.connect()
-
-
-@gen.coroutine
-def main():
-    a = Model()
-    a.get_pool()
-
-
-if __name__ == '__main__':
-    ioloop.IOLoop.current().run_sync(main)
+        query = "UPDATE {} SET {} WHERE id = %(id)s LIMIT 1".format(self._table_name, ", ".join(update_columns))
+        yield self.get_pool().execute(query, params)
+        yield self.load()
