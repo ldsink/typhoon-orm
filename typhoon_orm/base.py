@@ -115,4 +115,3 @@ class TObject(object):
             raise gen.Return(False)
         query = "UPDATE {} SET {} WHERE id = %(id)s LIMIT 1".format(self._table_name, ", ".join(update_columns))
         yield self.get_pool().execute(query, params)
-        yield self.load()
