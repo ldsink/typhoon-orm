@@ -6,13 +6,3 @@ class TDatabase(object):
     db_database = None
     db_charset = 'utf8'
     db_autocommit = True
-
-
-class UserDB(TDatabase):
-    DB_PORT = 3307
-
-
-if __name__ == '__main__':
-    a = UserDB()
-    a.db_port = 10
-    print(a.db_port)
